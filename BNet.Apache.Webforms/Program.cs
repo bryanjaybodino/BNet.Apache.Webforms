@@ -35,6 +35,32 @@ namespace BNet.Apache.Webforms
 
         static void Main(string[] args)
         {
+            string taskName = "ASPHostingServer_AutoStart";
+
+            // ---- 1. If the Scheduled Task already exists, skip the UAC prompt block entirely! ----
+            if (!TaskExists(taskName))
+            {
+                // ---- 2. First-run only: Ensure we are running as Administrator to create the task ----
+                if (!IsAdministrator())
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = Assembly.GetExecutingAssembly().Location,
+                            Arguments = string.Join(" ", args),
+                            Verb = "runas", // Triggers UAC prompt ONLY ONCE ever
+                            UseShellExecute = true
+                        });
+                    }
+                    catch { }
+                    return; // Exit non-admin instance
+                }
+
+                // ---- 3. Register the highest-privilege task on first run ----
+                RegisterHighestPrivilegeTask(taskName);
+            }
+
             // Global safety net: Catch unhandled exceptions on any thread and auto-restart
             AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
             {
@@ -63,32 +89,12 @@ namespace BNet.Apache.Webforms
                 virtualDir = "/" + virtualDir.Trim().TrimStart('/', '\\').TrimEnd('/', '\\');
             }
 
-            // ---- Ensure we are running as Administrator to configure Firewall & URL ACL ----
-            if (!IsAdministrator())
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = Assembly.GetExecutingAssembly().Location,
-                        Arguments = string.Join(" ", args),
-                        Verb = "runas",
-                        UseShellExecute = true
-                    });
-                }
-                catch { }
-                return; // Exit non-admin instance
-            }
-
             // Hide Console Window
             IntPtr handle = GetConsoleWindow();
             if (handle != IntPtr.Zero)
             {
                 ShowWindow(handle, SW_HIDE);
             }
-
-            // Register app for Windows Startup on first run
-            RegisterStartup("ASPHostingServer");
 
             string exePath = Assembly.GetExecutingAssembly().Location;
             string exeDir = Path.GetDirectoryName(exePath);
@@ -227,17 +233,51 @@ namespace BNet.Apache.Webforms
             }
         }
 
-        static void RegisterStartup(string appName)
+        static bool TaskExists(string taskName)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "schtasks",
+                    Arguments = $"/query /tn \"{taskName}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    process.WaitForExit();
+                    return process.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static void RegisterHighestPrivilegeTask(string taskName)
         {
             try
             {
                 string exePath = Assembly.GetExecutingAssembly().Location;
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
+
+                var psi = new ProcessStartInfo
                 {
-                    if (key.GetValue(appName) == null)
-                    {
-                        key.SetValue(appName, $"\"{exePath}\"");
-                    }
+                    FileName = "schtasks",
+                    Arguments = $"/create /tn \"{taskName}\" /tr \"\\\"{exePath}\\\"\" /sc ONLOGON /rl HIGHEST /f",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    process.WaitForExit();
                 }
             }
             catch { }
